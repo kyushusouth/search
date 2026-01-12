@@ -6,6 +6,7 @@ references
 """
 
 import json
+import pickle
 from pathlib import Path
 
 from opensearchpy import OpenSearch, helpers
@@ -17,6 +18,12 @@ def main():
     # load_data
     with open(root_dir.joinpath("data", "products.json"), "r") as f:
         products_data = json.load(f)
+
+    with open(root_dir.joinpath("data", "product_embs.pickle"), "rb") as f:
+        embs = pickle.load(f)
+
+    for i, product in enumerate(products_data):
+        product["embedding"] = embs[i]
 
     # create clients
     host = "localhost"
@@ -56,6 +63,7 @@ def main():
                                 }
                             }
                         },
+                        "knn": True,
                     }
                 },
                 "mappings": {
@@ -69,6 +77,21 @@ def main():
                         "brand": {"type": "keyword"},
                         "color": {"type": "text"},
                         "locale": {"type": "keyword"},
+                        "embedding": {
+                            "type": "knn_vector",
+                            "dimension": 3072,
+                            "method": {
+                                "name": "hnsw",
+                                "space_type": "l2",
+                                "engine": "faiss",
+                                "parameters": {
+                                    "ef_search": 100,
+                                    "ef_construction": 100,
+                                    "m": 16,
+                                },
+                            },
+                            "mode": "on_disk",
+                        },
                     }
                 },
             },
@@ -98,6 +121,27 @@ def main():
 
     if len(succeeded) > 0:
         print(f"Bulk-inserted {len(succeeded)} items.")
+
+    # create search-pipeline for hybrid search
+    pipeline_id = "nlp-search-pipeline"
+
+    pipeline_doby = {
+        "description": "Post processor for hybrid search",
+        "phase_results_processors": [
+            {
+                "normalization-processor": {
+                    "normalization": {"technique": "min_max"},
+                    "combination": {
+                        "technique": "arithmetic_mean",
+                        "parameters": {"weights": [0.3, 0.7]},
+                    },
+                }
+            }
+        ],
+    }
+
+    response = client.search_pipeline.put(id=pipeline_id, body=pipeline_doby)
+    print(response)
 
 
 if __name__ == "__main__":
